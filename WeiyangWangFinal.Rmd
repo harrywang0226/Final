@@ -1,0 +1,148 @@
+---
+title: "Final Report"
+author: "Weiyang Wang"
+date: "2016,March,15th"
+output: html_document
+---
+
+
+# Report
+
+### Data Cleaning and Feature Engineering
+First of all, I loaded all the libraries I am going to use.
+```{r, echo=F,message=F,warning=F}
+# load library
+library(nycflights13)
+library(dplyr)
+library(RSQLite)
+```
+Then, I started to load my data from nycflights13 package. I created four panel data frames, one is flight information with weather information, one is flight information with plane characteristics info, one is flight information with destination airport information, and final one is flight information with time aspects.
+
+```{r,echo=F,message=F,warning=F}
+db <- src_sqlite("database.sqlite3", create = T)
+flights_sqlite <- copy_to(
+  db, flights, temporary = FALSE, 
+  indexes = list(
+    c("year", "month", "day"), 
+    "carrier", 
+    "tailnum")
+)
+airlines_sqlite <- copy_to(
+  db, airlines, temporary = FALSE, 
+  indexes = list("carrier")
+)
+
+airports_sqlite <- copy_to(
+  db, airports, temporary = FALSE, 
+  indexes = list("faa")
+)
+
+planes_sqlite <- copy_to(
+  db, planes, temporary = FALSE, 
+  indexes = list("tailnum")
+)
+
+weather_sqlite <- copy_to(
+  db, weather, temporary = FALSE, 
+  indexes = list(
+    c("year", "month","day","hour"),
+    "origin")
+)
+
+df.flight<-tbl(db, sql("SELECT * FROM flights")) %>% 
+  collect() %>%
+  mutate(canceled=is.na(arr_time))
+df.plane<-tbl(db, sql("SELECT * FROM planes")) %>% 
+  collect()
+df.airport<-tbl(db,sql("SELECT * FROM airports"))%>% 
+  collect()
+df.airport<-airports %>% mutate(dest = faa)
+df.weather<-tbl(db,sql("SELECT * FROM weather")) %>%
+  collect()
+# panel data flights and airport
+df.FA<-inner_join(
+  df.flight, df.airport,by="dest")
+# panel data flights and plane
+df.FP<-inner_join(
+  df.flight,df.plane,by="tailnum")
+# panel data flights and weather
+df.FW<-inner_join(
+  df.flight,df.weather)
+# panel data flights and departure date
+df.FT<-df.flight
+df.FT$time_of_day<-NA
+df.FT$time_of_day<-df.FT$hour+(df.FT$minute/60)
+df.FT$date<-paste(df.FT$year,df.FT$month,df.FT$day)
+df.FT$date<-as.Date(df.FT$date,"%Y%m%d")
+df.FT$weekdays<-weekdays(df.FT$date)
+# Feature Engineering
+df.FW$canceled<-ifelse(df.FW$canceled==FALSE,0,1)
+df.FA$canceled<-ifelse(df.FA$canceled==FALSE,0,1)
+df.FP$canceled<-ifelse(df.FP$canceled==FALSE,0,1)
+df.FT$canceled<-ifelse(df.FT$canceled==FALSE,0,1)
+```
+
+### Analysis
+
+Explain the relationship between departure delays and cancelations with each of the following flight facets:
+a) weather
+b) time of day, day of week, and time of year, and any other aspect of time
+c) airport destination
+d) characteristics of the plane
+
+The basic idea here is, for each of the facets,I will run linear regressions on depature delays to explain its relationship with these facets. And after that, since the data type of cancelations is binomial(0,1), I will run logistic regressions on cancelations to explain the probability of cancelation given some information.
+
+#### Weather
+```{r echo=F,message=F,warning=F}
+FWreg<-lm(dep_delay~temp+humid+wind_speed+precip+pressure+visib,df.FW)
+summary(FWreg)
+FWlgreg<-glm(canceled~temp+humid+wind_speed+precip+pressure+visib,df.FW,family=binomial(link="probit"))
+summary(FWlgreg)
+```
+According to the summary, we can see all the variables are significant at over 99% confidence level. Higher temperature, faster wind speed and larger preciptation have positive effects on depature delay time. Higer humidity, higer sea level pressure and good visibility can reduce the depature delay time.
+
+The result of logistic regression with probit function shows that temperature, sea level pressure and visibility have significant effect on flights cancelation. Higher temperature will cause 0.71% more probability on cancelation, while higher pressure may reduce 1.1% probability on cancelation and good visibility can reduce the probability of cancelation by over 6%.
+
+#### Time Aspect
+```{r echo=F,message=F,warning=F}
+# Depature time
+DFreg<-lm(dep_delay~time_of_day,df.FT)
+summary(DFreg)
+DFlgreg<-glm(canceled~as.factor(hour),df.FT,family=binomial(link="probit"))
+summary(DFlgreg)
+MFreg<-lm(dep_delay~as.factor(month),df.FT)
+summary(MFreg)
+MFlgreg<-glm(canceled~as.factor(month),df.FT,family=binomial(link="probit"))
+summary(MFlgreg)
+WFreg<-lm(dep_delay~weekdays,df.FT)
+summary(WFreg)
+WFlgreg<-glm(canceled~weekdays,df.FT,family=binomial(link="probit"))
+summary(WFlgreg)
+```
+According to the summary, time of day has significant effect on depature delay time, as depature time becoming later during a day, the delay mins will increase by 2.13 mins. However, the time of day will not have any significant effect on flight cancelation.
+
+The month variable also has significant effect on depature delay time on at least 95% confidence level. From result, we can see the average delay mins on Jan is around 10, Feb, March, April, May, June, July, Aug and Dec delay more than Jan, and Sept, Oct, and Nov usually delay less than Jan. 
+Compare to Jan, that Feb, March, April, Jun, July, and Dec have significant more probabilty that flights could be canceled, while Aug, Oct, and Nov have less chance of flights cancelation.
+
+The weekdays also show significant effect on delay time. Tuesdays have a mean of 10.6 mins delay time, and all other days except Saturdays will delay more than the average delay time on Tuesdays. Saturdays usually has less delay time. Comparing to Tuesdays again, Thursdays and Fridays have significant more chance to have canceled flights while Sundays usually have less chance to cancel flights.
+
+#### Airport Destination
+```{r echo=F,message=F,warning=F}
+# Airport Destination
+FAreg<-lm(dep_delay~name+lat+lon+alt,df.FA)
+summary(FAreg)
+FAlgreg<-glm(canceled~name+lat+lon+alt,df.FA,family=binomial(link="probit"))
+summary(FAlgreg)
+```
+According to the summary, we can see the destinations have no significant effect on depature delay time. However, some destinations have significant effects on flight cancelation. In the summary, the airport name with three stars after it means its effect is significant at over 99% level. The coefficients with positive values mean those airports have more chance to cancel flights, and negative coefficients mean less chance to cancel flights.
+
+#### Plane Characteristics
+```{r echo=F,message=F,warning=F}
+# Plane characteristics
+#unique(df.FP$seats[which(df.FP$model=="different models")])
+FPreg<-lm(dep_delay~model,df.FP)
+summary(FPreg)
+FPlgreg<-glm(canceled~model,df.FP,family=binomial(link="probit"))
+summary(FPlgreg)
+```
+According to the summary,some specific plane models have significant effects on depature delay time. In the first summary, the model names with at least two stars mean they are significant at 99% level. Positive coefficients mean positive effects on delay time, and negative coefficients mean negative effects. The logistic regression summary shows some models will influence the chance of cancelation. Those model names with three stars show that they are significant at over 99% level. Again, positive coefficients mean more chance to be canceled, and negative coefficients mean less chance to be canceled.
